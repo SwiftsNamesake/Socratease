@@ -42,7 +42,7 @@ module Socratease.Serialise where
 -- We'll need these
 --------------------------------------------------------------------------------------------------------------------------------------------
 import qualified Data.Aeson as JSON
-import           Data.Aeson (ToJSON, FromJSON, toJSON, fromJSON, (.=))
+import           Data.Aeson (ToJSON, FromJSON, toJSON, fromJSON, (.=), (.:))
 import           Data.Convertible
 import           Data.String
 import           Data.Functor
@@ -52,6 +52,7 @@ import Text.Printf
 
 import System.Directory
 
+import Control.Applicative
 import Control.Monad (void, forM, unless)
 import Control.Lens hiding ((.=))
 
@@ -98,19 +99,33 @@ instance (IsString string, Convertible auth SqlValue, Convertible string SqlValu
 -- Load ------------------------------------------------------------------------------------------------------------------------------------
 
 -- |
+instance (FromJSON string) => FromJSON (Author string) where
+  parseJSON (JSON.Object o) = Author <$> (o .: "id") <*> (o .: "fullname")
+
+
+-- |
+instance (FromJSON string, FromJSON auth) => FromJSON (BlogEntry string auth) where
+  parseJSON (JSON.Object o) = BlogEntry <$>
+                                (o .: "id")        <*>
+                                (o .: "timestamp") <*>
+                                (o .: "title")     <*>
+                                (o .: "contents")  <*>
+                                (o .: "author")
+
+
+-- |
 -- TODO: This is quite fragile (cf. schemas)
-instance (IsString string, Convertible string SqlValue) => Convertible [SqlValue] (Author string) where
-  safeConvert [SqlInteger ownid, SqlString fullname'] = Right $ Author { _AuthorIdof = ownid, _fullname = fullname' }
+instance (IsString string, Convertible SqlValue string) => Convertible [SqlValue] (Author string) where
+  safeConvert [SqlInteger ownid, SqlString fullname'] = Right $ Author { _AuthorIdof = ownid, _fullname = fromString fullname' }
   safeConvert _ = Left $ ConvertError { convSourceValue  = "",
                                         convSourceType   = "[SqlValue]",
                                         convDestType     = "Author string",
                                         convErrorMessage = "Failed to construct Author from SQL row" }
 
 
-
 -- |
 -- TODO: This is quite fragile (cf. schemas)
-instance (IsString string, Convertible string SqlValue) => Convertible [SqlValue] (BlogEntry string Integer) where
+instance (IsString string, Convertible SqlValue string) => Convertible [SqlValue] (BlogEntry string Integer) where
   safeConvert [SqlInteger ownid, SqlUTCTime time, SqlString title', SqlString contents', SqlInteger iauthor] = Right $ BlogEntry { _BlogEntryIdof = ownid,
                                                                                                                                    _timestamp     = time,
                                                                                                                                    _title         = fromString title',
@@ -193,12 +208,12 @@ selectQuery conn table schema whereclause = withTransaction conn $ \conn -> do
 
 
 -- |
-queryEntries :: (Convertible string SqlValue, IsString string) => Connection -> String -> IO (Either ConvertError [BlogEntry string Integer])
+queryEntries :: (Convertible SqlValue string, IsString string) => Connection -> String -> IO (Either ConvertError [BlogEntry string Integer])
 queryEntries conn = selectQuery conn "entries" entrySchema
 
 
 -- |
-queryAuthors :: (Convertible string SqlValue, IsString string) => Connection -> String -> IO (Either ConvertError [Author string])
+queryAuthors :: (Convertible SqlValue string, IsString string) => Connection -> String -> IO (Either ConvertError [Author string])
 queryAuthors conn = selectQuery conn "authors" authorSchema
 
 -- Posts -----------------------------------------------------------------------------------------------------------------------------------

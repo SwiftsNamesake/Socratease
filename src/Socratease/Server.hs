@@ -109,8 +109,9 @@ blog = do
 -- TODO: More advanced API for query strings
 -- TODO: JSON API for GET method
 sendEntries :: Connection -> Request BS.ByteString -> IO (Response BS.ByteString)
-sendEntries conn request = either errorResponse entryresponse <$> (Serialise.queryEntries conn "TRUE")
+sendEntries conn request = either errorResponse entryresponse <$> loadEntries
   where
+    loadEntries = Serialise.queryEntries conn "TRUE" :: IO (Either ConvertError [BlogEntry String Integer])
     entryresponse entries = Response (2,0,0) "Reason goes here" (headers $ payload entries) (payload entries)
     errorResponse _       = Response (4,0,4) "Failed to retrieve entries. Sorry." [Header HdrContentLength "0"] ""
     payload entries = JSON.encode entries
@@ -122,7 +123,8 @@ sendEntries conn request = either errorResponse entryresponse <$> (Serialise.que
 -- TODO: JSON API for GET method
 -- TODO: Error handling
 postEntries ::  Connection -> Request BS.ByteString -> IO (Response BS.ByteString)
-postEntries conn request = maybe errorResponse successResponse (JSON.decode $ rqBody request)
+postEntries conn request = maybe errorResponse successResponse mEntriesJSON
   where
+    mEntriesJSON = JSON.decode $ rqBody request :: Maybe [BlogEntry String Integer]
     successResponse json = Serialise.saveEntries conn json >> return (Response (2,0,0) "Succesfully posted entries" [Header HdrContentLength "0"] "")
     errorResponse        = return $ Response (0,0,0) "Failed to upload entries" [Header HdrContentLength "0"] ""
