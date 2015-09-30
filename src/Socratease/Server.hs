@@ -98,10 +98,12 @@ blog = do
   serverWith config (handlerequest conn)
   where
     handlerequest conn sockaddr url request = response conn sockaddr url request
-    response conn sockaddr url request = case request of
-      (rqMethod -> GET)  -> sendEntries conn request
-      (rqMethod -> POST) -> postEntries conn request
-      _                      -> return $ Response (5,0,1) "This method is not yet supported." [Header HdrContentType "0"] ""
+    response conn sockaddr url request = do
+      putStrLn "Incoming request"
+      case request of
+        (rqMethod -> GET)  -> putStrLn "GET"  >> sendEntries conn request
+        (rqMethod -> POST) -> putStrLn "POST" >> postEntries conn request
+        _                      -> return $ Response (5,0,1) "This method is not yet supported." [Header HdrContentType "0"] ""
     config = Config stdLogger "192.168.1.88" 8000
 
 
@@ -111,7 +113,7 @@ blog = do
 sendEntries :: Connection -> Request BS.ByteString -> IO (Response BS.ByteString)
 sendEntries conn request = either errorResponse entryresponse <$> loadEntries
   where
-    loadEntries = Serialise.queryEntries conn "TRUE" :: IO (Either ConvertError [BlogEntry String Integer])
+    loadEntries = putStrLn "Loading entries" >> (Serialise.queryEntries conn "1" :: IO (Either ConvertError [BlogEntry String Integer])) >>= (\e -> putStrLn "encoding entries" >> print e >> return e)
     entryresponse entries = Response (2,0,0) "Reason goes here" (headers $ payload entries) (payload entries)
     errorResponse _       = Response (4,0,4) "Failed to retrieve entries. Sorry." [Header HdrContentLength "0"] ""
     payload entries = JSON.encode entries

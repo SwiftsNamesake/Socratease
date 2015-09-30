@@ -14,6 +14,8 @@
 --        - Factor out schemas, functions for checking schemas
 --        - Parameters from schema (eg. "Integer, Integer, Text" -> "?, ?, ?")
 --        - Constructing queries safely
+--        - Hide IDs in API functions (?)
+--        - Handle persistent DB connections
 
 
 -- SPEC | -
@@ -46,7 +48,10 @@ import           Data.Aeson (ToJSON, FromJSON, toJSON, fromJSON, (.=), (.:))
 import           Data.Convertible
 import           Data.String
 import           Data.Functor
-import           Data.Word
+import           Data.Time -- (defaultTimeLocale)
+import qualified Data.ByteString as BS
+import qualified Data.Text       as T
+import qualified Data.ByteString.Char8 as B
 
 import Text.Printf
 
@@ -57,6 +62,7 @@ import Control.Monad (void, forM, unless)
 import Control.Lens hiding ((.=))
 
 import Database.HDBC
+import Database.HDBC.Locale (defaultTimeLocale)
 import Database.HDBC.Sqlite3
 
 import Socratease.Types
@@ -104,7 +110,8 @@ instance (FromJSON string) => FromJSON (Author string) where
 
 
 -- |
-instance (FromJSON string, FromJSON auth) => FromJSON (BlogEntry string auth) where
+-- instance (FromJSON string, FromJSON auth) => FromJSON (BlogEntry string auth) where
+instance (FromJSON string) => FromJSON (BlogEntry string Integer) where
   parseJSON (JSON.Object o) = BlogEntry <$>
                                 (o .: "id")        <*>
                                 (o .: "timestamp") <*>
@@ -125,16 +132,19 @@ instance (IsString string, Convertible SqlValue string) => Convertible [SqlValue
 
 -- |
 -- TODO: This is quite fragile (cf. schemas)
+--  SqlInt64 1,SqlByteString "1873-03-15 06:26:41",SqlByteString "Dummy content",SqlByteString "Oh Make Something Up",SqlInt64 0
 instance (IsString string, Convertible SqlValue string) => Convertible [SqlValue] (BlogEntry string Integer) where
-  safeConvert [SqlInteger ownid, SqlUTCTime time, SqlString title', SqlString contents', SqlInteger iauthor] = Right $ BlogEntry { _BlogEntryIdof = ownid,
-                                                                                                                                   _timestamp     = time,
-                                                                                                                                   _title         = fromString title',
-                                                                                                                                   _contents      = fromString contents',
-                                                                                                                                   _author        = iauthor }
-  safeConvert _ = Left $ ConvertError { convSourceValue  = "",
-                                        convSourceType   = "[SqlValue]",
-                                        convDestType     = "BlogEntry string Integer",
-                                        convErrorMessage = "Failed to construct BlogEntry from SQL row" }
+  safeConvert [SqlInt64 ownid, SqlByteString time, SqlByteString title', SqlByteString contents', SqlInt64 iauthor] = Right BlogEntry { _BlogEntryIdof = fromIntegral ownid,
+                                                                                                                                        _timestamp     = parseTime' $ B.unpack time,
+                                                                                                                                        _title         = fromString $ B.unpack title',
+                                                                                                                                        _contents      = fromString $ B.unpack contents',
+                                                                                                                                        _author        = fromIntegral iauthor }
+    where
+      parseTime' ts = let Just t = parseTime defaultTimeLocale "%0Y-%m-%d %H:%M:%S" ts in t -- TODO: Handle Nothing case
+  safeConvert row = Left $ ConvertError { convSourceValue  = show row,
+                                          convSourceType   = "[SqlValue]",
+                                          convDestType     = "BlogEntry string Integer",
+                                          convErrorMessage = "Failed to construct BlogEntry from SQL row" }
 
 
 
@@ -157,10 +167,16 @@ blogpath = "assets/database/blog.db"
 -- | Schemas
 -- TODO: Type safe schemas
 entrySchema :: String
-entrySchema = "id INTEGER PRIMARY KEY, timestamp DATETIME, contents TEXT, title TEXT, author INTEGER NOT NULL"
+entrySchema = "id INTEGER PRIMARY KEY, timestamp DATETIME, title TEXT, contents TEXT, author INTEGER NOT NULL"
+
+entryParameters :: String
+entryParameters = "id, timestamp, title, contents, author"
 
 authorSchema :: String
 authorSchema = "id INTEGER PRIMARY KEY, fullname TEXT NOT NULL"
+
+authorParameters :: String
+authorParameters = "id, fullname"
 
 -- Create ----------------------------------------------------------------------------------------------------------------------------------
 
@@ -181,15 +197,31 @@ createAuthorsTable :: Connection -> IO ()
 createAuthorsTable conn = createTable conn "authors" authorSchema
 
 
+-- | Uploads some dummy entries
+-- TODO: Safe schemas (again)
+populateEntriesTable conn = do
+  putStrLn "Populating entries table..."
+  insert <- prepare conn "INSERT INTO entries (timestamp, title, contents, author) VALUES (?, ?, ?, ?)"
+  void $ either
+           (const $ putStrLn "Failed to insert dummy entries.")
+           (\rows -> executeMany insert (map (drop 1) rows) >> commit conn)
+           (mapM safeConvert entries :: Either ConvertError [[SqlValue]])
+  where
+    entries = [BlogEntry { _BlogEntryIdof = 0, _timestamp = UTCTime { utctDay=ModifiedJulianDay 5232, utctDayTime=23201 }, _title = "Oh Make Something Up", _contents = "Dummy content", _author = 0 }] :: [BlogEntry String Integer]
+
+
 -- |
 -- TODO: Move
 -- TODO: Dependency injection for testing
 -- TODO: Don't re-create if already exists (?)
 createBlogDatabase :: IO ()
 createBlogDatabase = do
-  flip unless (writeFile blogpath "") <$> doesFileExist blogpath
+  putStrLn "Creating blog database..."
+  flip unless (putStrLn "Recreating database" >> writeFile blogpath "") <$> doesFileExist blogpath
   conn <- connectToBlogDB
-  withTransaction conn $ forM [createEntriesTable, createAuthorsTable] . (&)
+  withTransaction conn $ \conn -> do
+    forM [createEntriesTable, createAuthorsTable] ($ conn)
+    populateEntriesTable conn
   return ()
 
 -- Queries ---------------------------------------------------------------------------------------------------------------------------------
@@ -201,20 +233,24 @@ createBlogDatabase = do
 -- TODO: Factor out raw query logic
 -- TODO: This is unsafe (SQL injections)
 selectQuery :: (Convertible [SqlValue] v) => Connection -> String -> String -> String -> IO (Either ConvertError [v])
-selectQuery conn table schema whereclause = withTransaction conn $ \conn -> do
-  query <- prepare conn $ printf "SELECT (%s) FROM %s WHERE %s" schema table whereclause
+selectQuery conn table parameters _ = withTransaction conn $ \conn -> do
+  -- printf "Running query: %s\n" $ (printf "SELECT %s FROM %s WHERE %s" parameters table whereclause :: String)
+  -- query <- prepare conn $ printf "SELECT %s FROM %s WHERE %s" parameters table whereclause
+  printf "SELECT %s FROM %s\n" parameters table
+  query <- prepare conn $ printf "SELECT %s FROM %s" parameters table
+  execute query []
   rows <- fetchAllRows query
   return $ mapM safeConvert rows
 
 
 -- |
 queryEntries :: (Convertible SqlValue string, IsString string) => Connection -> String -> IO (Either ConvertError [BlogEntry string Integer])
-queryEntries conn = selectQuery conn "entries" entrySchema
+queryEntries conn = selectQuery conn "entries" entryParameters
 
 
 -- |
 queryAuthors :: (Convertible SqlValue string, IsString string) => Connection -> String -> IO (Either ConvertError [Author string])
-queryAuthors conn = selectQuery conn "authors" authorSchema
+queryAuthors conn = selectQuery conn "authors" authorParameters
 
 -- Posts -----------------------------------------------------------------------------------------------------------------------------------
 
@@ -225,5 +261,5 @@ saveEntries conn entries = do
   insert <- prepare conn $ printf "INSERT INTO %s VALUES (?, ?, ?, ?, ?)" ("entries" :: String)
   either
     (const $ return ())
-    (executeMany insert)
+    (\rows -> executeMany insert rows >> commit conn)
     (mapM safeConvert entries)

@@ -51,17 +51,21 @@ import Data.Word
 -- TODO: Polymorphic
 -- TODO: Make author type polymorphic (so that we could either fill it with an ID or an author value according to our needs) (?)
 -- TODO: Category, comments, keywords, other metadata, etc.
-data BlogEntry string auth = BlogEntry { _BlogEntryIdof :: Integer, _timestamp :: UTCTime, _title :: string, _contents :: string, _author :: auth }
+data BlogEntry string auth = BlogEntry { _BlogEntryIdof :: Integer, _timestamp :: UTCTime, _title :: string, _contents :: string, _author :: auth } deriving (Show)
 
 
 -- |
 -- TODO: Extend
 -- TODO: Make sure IDs play well with the database
-data Author string = Author { _AuthorIdof :: Integer, _fullname :: String }
+data Author string = Author { _AuthorIdof :: Integer, _fullname :: string } deriving (Show)
 
 
 -- |
 -- newtype IDSQL = IDSQL Word64
+
+
+-- |
+-- data Schema = Schema
 
 
 -- | Typeclass for types with IDs referring to themselves (as opposed to a related value)
